@@ -1,0 +1,41 @@
+# TDAgent / TIDEdataset — Python dependencies
+#
+# Provenance: the original `tdagent` conda env was deleted, so exact original
+# pins could not be recovered. The package LIST below is authoritative — it is
+# the set of third-party modules actually imported across the 41 .py files
+# (extracted via AST). The VERSIONS are inferred from a sibling working env on
+# the same machine (`fedmosaic`), i.e. a coherent, CUDA-compatible combo; relax
+# or adjust if a specific module needs an older line.
+#
+# Suggested setup:
+#   conda create -n tdagent python=3.10 -y && conda activate tdagent
+#   # install torch matching the box's CUDA first (see note), then:
+#   pip install -r requirements.txt
+
+# ---- core scientific stack ----
+numpy==2.2.6
+pandas==2.3.3
+scipy==1.15.3
+joblib==1.5.3
+tqdm==4.67.1
+PyYAML==6.0.3
+inflection            # small string-inflection util (version-insensitive)
+
+# ---- deep learning / embeddings ----
+# torch: install the build matching gpu18's CUDA, e.g.
+#   pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cu121
+torch==2.8.0
+transformers==4.57.1
+sentence-transformers==5.0.0   # used by baselines/bge_baseline.py (BGE retriever)
+
+# ---- vector search ----
+# vdb/ uses FAISS. On a GPU box prefer the conda GPU build:
+#   conda install -c pytorch -c nvidia faiss-gpu
+# The pip CPU build below is a portable fallback:
+faiss-cpu==1.12.0
+
+# ---- LLM / agent side ----
+openai==2.35.1        # DashScope OpenAI-compatible endpoint (dataset + method)
+pydantic==2.13.4
+agentscope            # agent framework (method side); pin to your tested line
+nltk==3.9.4           # if used, also fetch corpora: python -c "import nltk; nltk.download('punkt')"

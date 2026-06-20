@@ -1,0 +1,36 @@
+# Benchmark generation hyper-parameters. Any value is overridable by the same-name
+# UPPERCASE env var, e.g. `QUERY_TABLE_COUNT=10 python main.py`.
+
+# ---- run / output ----
+dataset: OpenData_USA          # source under processed_dataset/ (output -> datalakes/<dataset>)
+seed: 42                       # RNG seed
+queries_per_table: 1           # queries per source table
+partition_retries: 10          # re-plan attempts until grounds >= min_grounds
+fail_limit: 999999             # abort after this many failed queries
+
+# ---- source-table budget (by table count) ----
+query_table_count: 60          # source tables [0:N) generate queries
+distractor_table_count: 40     # source tables [N:N+M) become distractor-only noise
+distractor_slices_per_table: 30  # slices per distractor table
+
+# ---- per-node table counts / widths ----
+pos_split_cnt: 10              # positive tables per node
+neg_split_cnt: 30             # relationship negatives per node
+min_cols: 4                   # min columns per emitted table (filler pads to this)
+min_grounds: 8                # min ground-truth tables to keep a query
+
+# ---- topology / edge sampling ----
+min_hops: 2                   # min chain depth
+max_hops: 4                   # max chain depth
+p_query_table: 0.8            # P(query ships a seed table)
+p_corr_hop: 0.4               # P(a key edge is corr rather than overlap)
+p_union_hop: 0.3              # P(a hop is a union edge)
+p_combiner: 0.4               # P(topology is converge rather than chain)
+p_value: 0.6                  # P(a hop carries an eq/range value constraint)
+value_pos_cnt: 13             # positives a value hop makes (pos_split_cnt satisfy, rest are value-negatives)
+
+# ---- correlation / anchors / set ops ----
+min_corr_groups: 5            # min surviving key groups for a corr edge (else demote to overlap)
+anchor_k: 12                  # top-K frequent key values forming the joinable set
+anchor_core_k: 3              # top-k key values forced into every positive (subset of anchor_k)
+intersection_gt: 5            # GT count for an intersection (converge) query

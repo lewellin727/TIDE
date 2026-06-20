@@ -1,0 +1,45 @@
+# TIDE method config. Paths are relative to the repo root (run from there).
+
+# ---- data paths ----
+datalake_dir: TIDEdataset/dataset/datalakes   # generated benchmark splits (from TIDEdataset/)
+dataset: WebTable                             # which split under datalake_dir to run on
+vdb_dir: vdb                                  # vector-index + sketch cache (built on first run)
+
+# ---- embedding model ----
+emb_model_path: BAAI/bge-large-en-v1.5        # HuggingFace id or local path; used for column/metadata indexes + column-name matching
+vdb_emb_batch_size: 64                        # encode batch size at index-build time
+
+# ---- semantic similarity thresholds ----
+col_match_threshold: 0.80                     # cosine floor for "query column == lake column" (bridges renamed columns)
+vdb_score_threshold: 0.5                      # cosine floor for vector-search matches
+
+# ---- ranker thresholds ----
+ranker:
+  correlation_sign_mode: abs                  # 'abs' (both signs) | 'positive' (positive correlation only)
+  correlation_score_threshold: 0.5            # |Pearson| floor for keeping a correlated candidate
+  numerical_predicate_threshold: 0.0          # min fraction of rows in [lo, hi]; 0.0 = any row in range
+
+# ---- agent loop ----
+agent:
+  max_loop: 6                                 # max planning iterations per query
+  per_query_timeout_s: 1200                   # wall-clock cap on one discovery() call
+  concurrency: 4                              # queries run concurrently (override with --concurrency)
+
+# ---- reasoning tree ----
+tree:
+  cand_top_k: 10                              # per-node cap on candidate tables shown to the planner
+
+# ---- tool output cap ----
+tools:
+  result_cap: 256                             # max tables returned by a single operator call
+
+# ---- final result aggregation ----
+result:
+  final_top_k: 20                             # cap on candidate tables returned to evaluation
+  final_min_constraint_match: 1               # keep a table only if it satisfies >= this many query constraints
+
+# ---- relationship-graph navigation ----
+navigation:
+  k_1: 40                                     # reliable path pool size (Phase I)
+  k_o: 6                                       # top paths surfaced to observation after rerank (Phase II)
+  d_o: 3                                       # BFS depth for relational path search
