@@ -23,22 +23,16 @@ baselines by up to **67% in precision** and **53% in recall**.
 
 ## 🧭 Method at a glance
 
-```
-                       ┌──────────────────────── offline (per lake) ───────────────────────┐
-   data lake  ───────► │ column content/context indexes (HNSW) · per-column sketches        │
-                       │ (Count-Min / equi-depth hist / KMV) · table relationship graph G_R │
-                       └────────────────────────────────────────────────────────────────────┘
-                                                   │
-   NL query  ─► parse constraints s_q ─►  ┌──────── online: constraint-guided discovery tree ────────┐
-                                          │  select node → relationship-aware observation (reliable + │
-                                          │  novel paths over G_R) → plan operators → execute &       │
-                                          │  verify constraints → expand tree                         │  ─►  top-k tables
-                                          └────────────────────────────────────────────────────────────┘
-```
+<p align="center">
+  <img src="figs/overview.png" alt="The architecture and workflow of TIDE" width="100%">
+</p>
 
-The offline phase precomputes shared artifacts once; the online phase greedily expands the highest-
-utility leaf each iteration until every branch terminates or the budget is exhausted, then aggregates
-candidate tables from all non-error leaves.
+TIDE has an offline phase that precomputes shared artifacts per lake — column content/context
+indexes (HNSW), per-column sketches (Count-Min / equi-depth histogram / KMV), and the table
+relationship graph G_R. The online phase parses the query into constraints and greedily expands the
+highest-utility leaf of a constraint-guided discovery tree each iteration — relationship-aware
+observation → plan operators → execute & verify constraints — until every branch terminates or the
+budget is exhausted, then aggregates candidate tables from all non-error leaves.
 
 ## 📁 Repository structure
 
