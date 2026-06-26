@@ -1,10 +1,22 @@
 import os
 import contextvars
+import yaml
 from openai import OpenAI
 from src.col_filter import ColFilter
 from src.col_name_matcher import ColNameMatcher
 from src.operators.seeker import ContentSeeker, ContextSeeker
 from src.operators.ranker import CategoricalRanker, NumericalRanker
+
+
+def _llm_backbone():
+    cfg = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.yaml")
+    try:
+        return yaml.safe_load(open(cfg)).get("llm_backbone", "deepseek-v4-pro")
+    except Exception:
+        return "deepseek-v4-pro"
+
+
+LLM_BACKBONE = _llm_backbone()   # planner / constraint-extractor LLM, from config.yaml
 
 def init_operators(vdb_searcher, col_match_threshold: float = 0.95, embedding_model=None,
                    ranker_cfg: dict | None = None):
@@ -61,7 +73,7 @@ def add_filter(query_table, filter_dir):
 
 
 _token_counter_var: "contextvars.ContextVar" = contextvars.ContextVar(
-    "tdagent_token_counter", default=None
+    "tide_token_counter", default=None
 )
 
 
@@ -93,7 +105,7 @@ def llm_generate(prompt):
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
     )
     completion = client.chat.completions.create(
-        model="deepseek-v4-pro",
+        model=LLM_BACKBONE,
         messages=[{"role": "user", "content": prompt}],
         extra_body={"enable_thinking": False},
         stream=False,

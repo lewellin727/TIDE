@@ -74,15 +74,12 @@ Key dependencies: `agentscope` (agent framework), `faiss-cpu` (vector search), `
 **Embedding model.** TIDE embeds columns with `bge-large-en-v1.5`. `config.yaml` defaults to the
 HuggingFace id `BAAI/bge-large-en-v1.5` (auto-downloaded); set it to a local path to run offline.
 
-**LLM backend.** The agent calls an OpenAI-compatible chat endpoint (the paper uses Qwen3.6-Max and
-DeepSeek-V4-Pro via Alibaba DashScope). Provide your key:
+**LLM backend.** The agent calls an OpenAI-compatible chat endpoint (Alibaba DashScope). Provide your
+key, and pick the backbone via `llm_backbone` in [`config.yaml`](config.yaml):
 
 ```bash
-export DASHSCOPE_API_KEY=<your-key>
+export DASHSCOPE_API_KEY=<your-key>       # config.yaml: llm_backbone: deepseek-v4-pro | qwen3.7-max
 ```
-
-The model name and endpoint are set in [`src/agent.py`](src/agent.py) (planner/observer) and
-[`src/utils.py`](src/utils.py) (constraint parser); change them there to use a different backbone.
 
 ## 🗄️ Data
 
@@ -103,12 +100,12 @@ lake, match that layout.
 # 1. configure: set dataset + paths in config.yaml, and export DASHSCOPE_API_KEY
 
 # 2. run discovery (first run also builds the indexes/graph cache under vdb_dir)
-python main.py --dataset WebTable                 # -> results/WebTable/tdagent.json
+python main.py --dataset WebTable                 # -> results/WebTable/tide.json
 
 #    options: --idxs 0,1,2 (subset)  --concurrency N  --out <path>  --log <path>
 
 # 3. evaluate against ground truth
-python eval.py --dataset WebTable                 # -> eval/WebTable/tdagent.json
+python eval.py --dataset WebTable                 # -> eval/WebTable/tide.json
 ```
 
 `main.py` writes one record per query as `{idx, query, candidates}`; `eval.py` reports
@@ -148,9 +145,10 @@ All knobs live in [`config.yaml`](config.yaml); paths are relative to the repo r
 | `datalake_dir`, `dataset` | parent dir of splits, and the split to run |
 | `vdb_dir` | cache for vector indexes + sketches (built on first run) |
 | `emb_model_path` | embedding model (HF id or local path) |
+| `llm_backbone` | planner / constraint-extractor LLM (`deepseek-v4-pro` \| `qwen3.7-max`) |
 | `col_match_threshold`, `vdb_score_threshold` | cosine floors for column-name matching / vector search |
 | `ranker.*` | correlation sign mode / threshold, numerical-predicate fraction |
-| `agent.max_loop`, `agent.per_query_timeout_s`, `agent.concurrency` | planning budget, per-query timeout, query concurrency |
+| `agent.max_loop`, `agent.max_attempts`, `agent.per_query_timeout_s`, `agent.concurrency` | planning budget, discovery attempts per query, per-query timeout, concurrency |
 | `tree.cand_top_k` | per-node candidate cap shown to the planner |
 | `tools.result_cap` | max tables returned by one operator call |
 | `result.final_top_k`, `result.final_min_constraint_match` | output cap, per-table constraint filter |

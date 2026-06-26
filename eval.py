@@ -79,9 +79,6 @@ def eval_results(metadata_path, results_path, output_path, k_values=[1, 3, 5, 8,
 
         n_total += 1
         if not candidates:
-            # Unsuccessful execution: COUNTED AS ZERO (P=R=NDCG=0 via calculate_metrics)
-            # and kept in the denominator, so P/R/NDCG are averaged over ALL queries. The
-            # success rate is still reported separately below.
             print(f"Warning: No candidates for query idx {res_idx} (counted as 0)")
         else:
             n_success += 1
@@ -126,8 +123,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=str, default=None,
                         help="Comma-separated dataset names; defaults to WebTable")
-    parser.add_argument("--method", type=str, default="tdagent",
-                        help="Comma-separated method names; defaults to tdagent")
+    parser.add_argument("--method", type=str, default="tide",
+                        help="Comma-separated method names; defaults to tide")
     args = parser.parse_args()
 
     methods = args.method.split(",")

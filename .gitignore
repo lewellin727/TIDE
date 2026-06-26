@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.ipynb_checkpoints/
+.venv/
+venv/
+env/
+.DS_Store
+.idea/
+.vscode/
+
+vdb/                       # vector-index + sketch cache (built on first run)
+results/                   # discovery outputs (main.py)
+eval/                      # evaluation reports (eval.py)
+logs/                      # run logs
+
+TIDEdataset/dataset/
+TIDEdataset/log/

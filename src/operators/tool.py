@@ -9,37 +9,26 @@ from src.operators.seeker import ContentSeeker, ContextSeeker
 from src.operators.ranker import CategoricalRanker, NumericalRanker
 
 
-# ==== tool execution context (set by agent before each tool_use) ====
+# ==== tool execution context (set by the agent before each tool call) ====
 #
-# Pipeline cap cascade (top → bottom):
-#   1. VDBSearcher.search: top_k=512 (broad recall, threshold-filtered by config.vdb_score_threshold)
-#   2. ContentSeeker / ContextSeeker.search: top_k=20 (default arg), 512 when called from tool wrappers below
-#   3. Rankers (CategoricalRanker / NumericalRanker): top_k=50 (loose; lets the global cap dominate)
-#   4. _cap (this module): config.tools.result_cap, default 20 — the final per-tool-call cap (M3)
-#   5. ReasoningTree.get_cand_tables: config.tree.cand_top_k, default 10 — per-node cap for the planner
+# Per-call output-cap cascade: VDB search (512) -> seekers (top_k) -> rankers (top_k=50)
+# -> _cap (config.tools.result_cap) -> ReasoningTree.get_cand_tables (config.tree.cand_top_k).
 #
-# H9 (Table.score mutation safety): rankers mutate `t.score` in-place, but every
-# rank call begins with a fresh Table list materialised by either names2table()
-# (reads CSV) or RelationshipGraph.get_navi_tables() (always creates new Table
-# wrappers around the cached df). Two reasoning nodes therefore never share a
-# Table instance, so an in-place score mutation in one node cannot corrupt
-# another. Keep this property invariant when touching the search pipeline.
+# Rankers mutate `t.score` in place, but every call starts from a fresh Table list
+# (names2table reads CSV; get_navi_tables wraps the cached df anew), so two nodes never
+# share a Table instance and an in-place mutation cannot corrupt another node.
 #
-# Concurrency model: the three "per-tool_use" pieces of state below are stored
-# as ContextVars so multiple queries can run as concurrent asyncio tasks
-# without clobbering each other's tool execution context. ContextVars are
-# automatically copied into each `asyncio.create_task`, giving every query its
-# own isolated view. `_result_cap` is set once at startup and read-only after
-# (no race) — it stays a module global.
+# The per-call state below is held in ContextVars so concurrent query tasks stay isolated;
+# `_result_cap` is set once at startup and read-only afterwards.
 
 _reasoning_tree_var: "contextvars.ContextVar" = contextvars.ContextVar(
-    "tdagent_reasoning_tree", default=None
+    "tide_reasoning_tree", default=None
 )
 _current_node_id_var: "contextvars.ContextVar" = contextvars.ContextVar(
-    "tdagent_current_node_id", default=None
+    "tide_current_node_id", default=None
 )
 _last_tool_result_var: "contextvars.ContextVar" = contextvars.ContextVar(
-    "tdagent_last_tool_result", default=None
+    "tide_last_tool_result", default=None
 )
 
 _result_cap: int = 20  # process-global startup config (read-only after init)
@@ -55,9 +44,7 @@ def set_current_node(node_id) -> None:
 
 
 def set_result_cap(cap: int) -> None:
-    """Configure the per-tool-call output cap (M3).
-    Called once at startup from main.py with the `tools.result_cap` config value.
-    """
+    """Set the per-tool-call output cap (config.tools.result_cap), once at startup."""
     global _result_cap
     _result_cap = max(1, int(cap))
 
@@ -79,10 +66,9 @@ def _fetch_node_tables(node_id: str, in_trajectory: bool = True) -> List[Table]:
     `ancestors + current` so a single trajectory's src_node_id stays linear.
 
     `in_trajectory=False` (used by combiners): allow any non-error node anywhere
-    in the tree. This matches paper Sec 3.3, which states combiners compose
-    intermediate candidates *across discovery iterations* — including sibling
-    trajectories. Restricting combiners to ancestors+current makes the
-    intersection/union/difference operators useless for their primary purpose.
+    in the tree, so combiners can compose intermediate candidates across
+    iterations (including sibling trajectories); restricting them to
+    ancestors+current would make intersection/union/difference useless.
     """
     tree = _reasoning_tree_var.get()
     current_id = _current_node_id_var.get()

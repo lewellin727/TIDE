@@ -12,7 +12,7 @@ from agentscope.message import Msg, ToolUseBlock
 from src.table import Table
 from src.query_constraint import QueryConstraint
 from src.tgr import rerank_paths, render_path_with_schema
-from src.utils import PLANNING_SYS_PROMPT, OBSERVATION_STAGE_SYS_PROMPT, add_token_usage
+from src.utils import PLANNING_SYS_PROMPT, OBSERVATION_STAGE_SYS_PROMPT, add_token_usage, LLM_BACKBONE
 from src.operators import tool as tool_ctx
 from src.operators.tool import (
     join_search, union_search, correlation_search,
@@ -25,7 +25,7 @@ from src.operators.ranker import CategoricalRanker, NumericalRanker
 PLANNING_TOOL_GROUP = "planning_operators"
 SEED_TOOL_GROUP = "seed_operator"  
 
-logger = logging.getLogger("tdagent")
+logger = logging.getLogger("tide")
 
 
 def _trim_for_log(obj, limit: int = 180) -> str:
@@ -71,10 +71,10 @@ class TableAgent(AgentBase):
 
         tool_ctx.set_reasoning_tree(reasoning_tree)
 
-        self.name = "tdagent"
+        self.name = "tide"
         self.observation_sys_prompt = OBSERVATION_STAGE_SYS_PROMPT
         self.model = DashScopeChatModel(
-            model_name="deepseek-v4-pro",
+            model_name=LLM_BACKBONE,
             api_key=os.environ["DASHSCOPE_API_KEY"],
             stream=False,
             enable_thinking=False,
