@@ -20,7 +20,7 @@ TIDE couples two components:
 ## 🧭 Method at a glance
 
 <p align="center">
-  <img src="figs/overview.png" alt="TIDE architecture and workflow" width="100%">
+  <img src="figs/tide_overview.png" alt="TIDE architecture and workflow" width="100%">
 </p>
 
 Offline preparation builds column indexes, sketches, and a weighted table relationship graph.
