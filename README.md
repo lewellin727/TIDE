@@ -1,39 +1,52 @@
 # 🌊 TIDE: Agentic Natural Language Table Discovery over Data Lakes
 
 Official implementation of **TIDE**, an agentic framework for natural-language (NL) table discovery
-over data lakes. TIDE reformulates discovery as a **lake-grounded, multi-step retrieval process**: an
-LLM agent iteratively reasons over intermediate tables and data-dependent lake signals (schemas,
-shared keys, value overlap, statistical dependence) to resolve high-level queries whose execution
-plan cannot be inferred from the query text alone.
+over data lakes. TIDE formulates discovery as an **adaptive multi-step retrieval process**, using
+intermediate tables and data lake evidence to guide subsequent discovery.
 
 TIDE couples two components:
 
-- **Constraint-level operators** — a composable action space of *seekers* (ground NL descriptors),
-  *rankers* (score value/relational conditions), and *combiners* (compose partial results), under a
-  uniform binding-level contract. Classical join / union / correlation / NL search are recovered as
-  fine-grained compositions of these operators.
-- **Lake-grounded tree reasoning** — a constraint-guided discovery tree whose expansion is grounded
-  in a precomputed table relationship graph via relationship-aware observation, then advanced by an
-  observe–plan–execute loop with verified constraint updates.
+- **Constraint-level operators** provide composable actions: *seekers* ground NL requirements,
+  *rankers* assess value or relational conditions, and *combiners* combine partial results.
+  Their fine-grained compositions realize common discovery operations and support retrieval
+  effectiveness and storage efficiency.
+- **Lake-grounded tree reasoning** organizes exploration as a constraint-guided discovery tree.
+  Each branch tracks candidate tables and unresolved query constraints. Relationship-aware
+  observation selects reliable paths reaching unexplored tables and summarizes them into evidence
+  for planning and execution.
 
-On a benchmark of 5 data lakes (38,334 tables, 261 queries), we compare TIDE with 5 NL table
-retrievers and 2 agentic baselines. With DeepSeek-V4-Pro, TIDE improves average **P@10 by 86%**
-and **R@40 by 41%** over the strongest baselines.
-
-> The benchmark generator lives in [`TIDEdataset/`](TIDEdataset/) — see its README to build the data.
+> The benchmark generator lives in [`TIDEdataset/`](TIDEdataset/).
 
 ## 🧭 Method at a glance
 
 <p align="center">
-  <img src="figs/overview.png" alt="The architecture and workflow of TIDE" width="100%">
+  <img src="figs/overview.png" alt="TIDE architecture and workflow" width="100%">
 </p>
 
-TIDE has an offline phase that precomputes shared artifacts per lake — column content/context
-indexes (HNSW), per-column sketches (Count-Min / equi-depth histogram / KMV), and the table
-relationship graph G_R. The online phase parses the query into constraints and greedily expands the
-highest-utility leaf of a constraint-guided discovery tree each iteration — relationship-aware
-observation → plan operators → execute & verify constraints — until every branch terminates or the
-budget is exhausted, then aggregates candidate tables from all non-error leaves.
+Offline preparation builds column indexes, sketches, and a weighted table relationship graph.
+Online discovery iteratively selects a tree node, observes lake evidence, plans operator calls,
+and executes them to update candidate tables and unresolved constraints. Results are aggregated
+from non-error leaves when discovery terminates.
+
+## 📊 Results
+
+We evaluate TIDE on five data lakes with **38,334 tables and 261 queries**, against five NL table
+retrievers and two agentic baselines. Both Qwen3.7-Max and DeepSeek-V4-Pro variants outperform the
+baselines in precision and recall across the five datasets.
+
+<p align="center">
+  <img src="figs/main_precision.png" alt="Precision at 10 across five datasets" width="100%">
+</p>
+
+**Precision@10.** With DeepSeek-V4-Pro, TIDE improves average P@10 from the strongest baseline's
+**0.363 to 0.676**, a relative gain of **86%**.
+
+<p align="center">
+  <img src="figs/main_recall.png" alt="Recall at 40 across five datasets" width="100%">
+</p>
+
+**Recall@40.** With the same backbone, TIDE improves average R@40 from the strongest baseline's
+**0.472 to 0.665**, a relative gain of **41%**.
 
 ## 📁 Repository structure
 
@@ -47,7 +60,7 @@ TIDE/
 │   ├── agent.py               # TableAgent — the observe–plan–execute loop (Algorithm 1, online)
 │   ├── reasoning_tree.py      # constraint-guided discovery tree (nodes, utility, result aggregation)
 │   ├── relationship_graph.py  # table relationship graph G_R + reliability-based path search
-│   ├── tgr.py                 # novelty-based path selection (submodular rerank) + path rendering
+│   ├── tgr.py                 # novelty-based path selection + path rendering
 │   ├── query_constraint.py    # parse the query into structured column constraints s_q
 │   ├── operators/
 │   │   ├── seeker.py          # content / context seekers (ground NL descriptors)
@@ -152,7 +165,7 @@ constraint-guided discovery tree ([`reasoning_tree.py`](src/reasoning_tree.py)).
 1. selects the highest-utility incomplete leaf;
 2. runs **relationship-aware observation** — reliability-based path search over the precomputed
    relationship graph ([`relationship_graph.py`](src/relationship_graph.py)) followed by
-   novelty-based, submodular path selection ([`tgr.py`](src/tgr.py)) — and summarizes the paths into
+   novelty-based path selection ([`tgr.py`](src/tgr.py)) — and summarizes the paths into
    lake-grounded evidence;
 3. **plans** the next operator(s) from that evidence, then **executes** them, expanding child nodes
    and discharging query constraints only when a returned binding verifies them.
