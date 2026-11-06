@@ -36,6 +36,7 @@ class VDBSearcher:
         if self.device.type == "cuda":
             self.model = self.model.half()
         self.model.eval()
+        self.embedding_dim = int(self.model.config.hidden_size)
 
         self.build_vdb()
 
@@ -63,7 +64,7 @@ class VDBSearcher:
         if os.path.exists(self.metadata_index_path) and os.path.exists(self.column_index_path):
             print("Loading existing VDB indexes...")
         else:
-            dim, M = 1024, 32
+            dim, M = self.embedding_dim, 32
             index_metadata = faiss.IndexHNSWFlat(dim, M, faiss.METRIC_INNER_PRODUCT)
             index_column = faiss.IndexHNSWFlat(dim, M, faiss.METRIC_INNER_PRODUCT)
 
@@ -86,6 +87,12 @@ class VDBSearcher:
             print("Databases built and saved successfully!")
         self.index_metadata = faiss.read_index(self.metadata_index_path)
         self.index_column = faiss.read_index(self.column_index_path)
+        for name, index in (("metadata", self.index_metadata), ("column", self.index_column)):
+            if index.d != self.embedding_dim:
+                raise ValueError(
+                    f"Cached {name} index dimension {index.d} does not match embedding "
+                    f"dimension {self.embedding_dim}. Use a new vdb_dir or rebuild the cache."
+                )
         # Set efSearch once during initialization to avoid concurrent searches mutating shared index settings.
         self.index_metadata.hnsw.efSearch = 1024
         self.index_column.hnsw.efSearch = 1024

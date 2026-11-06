@@ -6,14 +6,12 @@ from typing import List
 
 from agentscope.agent import AgentBase
 from agentscope.tool import Toolkit
-from agentscope.model import DashScopeChatModel
-from agentscope.formatter import DashScopeChatFormatter
 from agentscope.message import Msg, ToolUseBlock
 
 from src.table import Table
 from src.query_constraint import QueryConstraint
 from src.tgr import rerank_paths, render_path_with_schema
-from src.utils import PLANNING_SYS_PROMPT, OBSERVATION_STAGE_SYS_PROMPT, add_token_usage, LLM_BACKBONE
+from src.utils import PLANNING_SYS_PROMPT, OBSERVATION_STAGE_SYS_PROMPT, add_token_usage, create_agent_llm
 from src.operators import tool as tool_ctx
 from src.operators.tool import (
     join_search, union_search, correlation_search,
@@ -77,13 +75,7 @@ class TableAgent(AgentBase):
 
         self.name = "tide"
         self.observation_sys_prompt = OBSERVATION_STAGE_SYS_PROMPT
-        self.model = DashScopeChatModel(
-            model_name=LLM_BACKBONE,
-            api_key=os.environ["DASHSCOPE_API_KEY"],
-            stream=False,
-            enable_thinking=False,
-        )
-        self.formatter = DashScopeChatFormatter()
+        self.model, self.formatter = create_agent_llm()
         self.toolkit = Toolkit()
         self.toolkit.create_tool_group(
             group_name=PLANNING_TOOL_GROUP,

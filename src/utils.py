@@ -7,15 +7,53 @@ from src.col_name_matcher import ColNameMatcher
 from src.operators.seeker import ContentSeeker, ContextSeeker
 from src.operators.ranker import CategoricalRanker, NumericalRanker
 
-def _llm_backbone():
-    cfg = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.yaml")
-    try:
-        return yaml.safe_load(open(cfg)).get("llm_backbone", "deepseek-v4-pro")
-    except Exception:
-        return "deepseek-v4-pro"
+def _llm_settings(config):
+    provider = config.get("llm_provider", "dashscope")
+    if provider not in {"dashscope", "openai"}:
+        raise ValueError("llm_provider must be 'dashscope' or 'openai'")
+    base_url = config.get("llm_base_url")
+    if not base_url:
+        if provider == "openai":
+            raise ValueError("Set llm_base_url for your OpenAI-compatible service")
+        base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    return {
+        "provider": provider,
+        "model": config.get("llm_backbone", "deepseek-v4-pro"),
+        "base_url": base_url,
+        "native_base_url": config.get("llm_dashscope_base_url"),
+        "key_env": config.get("llm_api_key_env", "DASHSCOPE_API_KEY"),
+    }
 
 
-LLM_BACKBONE = _llm_backbone()   # planner / constraint-extractor LLM, from config.yaml
+with open(os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.yaml")) as _cfg:
+    LLM_SETTINGS = _llm_settings(yaml.safe_load(_cfg) or {})
+LLM_BACKBONE = LLM_SETTINGS["model"]
+
+
+def _llm_api_key():
+    key_env = LLM_SETTINGS["key_env"]
+    key = os.getenv(key_env)
+    if not key:
+        raise ValueError(f"Set the API key environment variable {key_env}")
+    return key
+
+
+def create_agent_llm():
+    from agentscope.model import DashScopeChatModel, OpenAIChatModel
+    from agentscope.formatter import DashScopeChatFormatter, OpenAIChatFormatter
+
+    common = dict(model_name=LLM_BACKBONE, api_key=_llm_api_key(), stream=False)
+    if LLM_SETTINGS["provider"] == "dashscope":
+        model = DashScopeChatModel(
+            **common, enable_thinking=False,
+            base_http_api_url=LLM_SETTINGS["native_base_url"],
+        )
+        return model, DashScopeChatFormatter()
+    model = OpenAIChatModel(
+        **common, client_kwargs={"base_url": LLM_SETTINGS["base_url"]},
+    )
+    return model, OpenAIChatFormatter()
+
 
 def init_operators(vdb_searcher, col_match_threshold: float = 0.95, embedding_model=None,
                    ranker_cfg: dict | None = None):
@@ -121,14 +159,15 @@ def get_token_counter() -> dict:
 
 def llm_generate(prompt):
     client = OpenAI(
-        api_key=os.getenv("DASHSCOPE_API_KEY"),
-        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        api_key=_llm_api_key(),
+        base_url=LLM_SETTINGS["base_url"],
     )
+    options = {"extra_body": {"enable_thinking": False}} if LLM_SETTINGS["provider"] == "dashscope" else {}
     completion = client.chat.completions.create(
         model=LLM_BACKBONE,
         messages=[{"role": "user", "content": prompt}],
-        extra_body={"enable_thinking": False},
         stream=False,
+        **options,
     )
     usage = getattr(completion, "usage", None)
     if usage is not None:

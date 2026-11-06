@@ -73,14 +73,35 @@ Key dependencies: `agentscope` (agent framework), `faiss-cpu` (vector search), `
 + `transformers` + `torch` (embeddings), `openai` (LLM API), `pandas` / `numpy` / `scipy`.
 
 **Embedding model.** TIDE embeds columns with `bge-large-en-v1.5`. `config.yaml` defaults to the
-HuggingFace id `BAAI/bge-large-en-v1.5` (auto-downloaded); set it to a local path to run offline.
+HuggingFace id `BAAI/bge-large-en-v1.5` (auto-downloaded); set it to a local path to load the embedding model offline.
+Index dimensions follow the encoder hidden size. Alternative encoders must support the existing
+CLS-token pooling; changing the model requires a fresh `vdb_dir`, even if its dimension is unchanged.
 
-**LLM backend.** The agent calls an OpenAI-compatible chat endpoint (Alibaba DashScope). Provide your
-key, and pick the backbone via `llm_backbone` in [`config.yaml`](config.yaml):
+**LLM backend.** The default is DashScope. Set the API key in the environment variable named by
+`llm_api_key_env`, and choose an available model using `llm_backbone` in [`config.yaml`](config.yaml):
 
 ```bash
-export DASHSCOPE_API_KEY=<your-key>       # config.yaml: llm_backbone: deepseek-v4-pro | qwen3.7-max
+export DASHSCOPE_API_KEY="your-key"
 ```
+
+DashScope uses two endpoints: `llm_base_url` for constraint extraction through its OpenAI-compatible
+API, and `llm_dashscope_base_url` for agent calls through its native API. Configure both for your region.
+To use another OpenAI-compatible Chat Completions service, configure:
+
+```yaml
+llm_provider: openai
+llm_backbone: your-model-name
+llm_api_key_env: OPENAI_API_KEY
+llm_base_url: https://your-service.example/v1
+```
+
+```bash
+export OPENAI_API_KEY="your-key"
+```
+
+In this mode, constraint extraction and all agent stages use the same endpoint and model.
+The service must support tool calling, including `tool_choice`; DashScope-specific parameters are omitted.
+`llm_dashscope_base_url` is ignored. No API keys are stored in configuration files.
 
 ## 🗄️ Data
 
@@ -145,7 +166,9 @@ All knobs live in [`config.yaml`](config.yaml); paths are relative to the repo r
 | `datalake_dir`, `dataset` | parent dir of splits, and the split to run |
 | `vdb_dir` | cache for vector indexes + sketches (built on first run) |
 | `emb_model_path` | embedding model (HF id or local path) |
-| `llm_backbone` | planner / constraint-extractor LLM (`deepseek-v4-pro` \| `qwen3.7-max`) |
+| `llm_backbone` | model used for constraint extraction and all agent stages |
+| `llm_provider`, `llm_api_key_env` | service adapter (`dashscope` or `openai`), API-key environment variable |
+| `llm_base_url`, `llm_dashscope_base_url` | OpenAI-compatible endpoint, DashScope native endpoint |
 | `col_match_threshold`, `vdb_score_threshold` | cosine floors for column-name matching / vector search |
 | `ranker.*` | correlation sign mode / threshold, numerical range fraction |
 | `agent.max_loop`, `agent.max_attempts`, `agent.per_query_timeout_s`, `agent.concurrency` | planning budget, discovery attempts per query, per-query timeout, concurrency |
