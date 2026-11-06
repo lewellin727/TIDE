@@ -24,6 +24,7 @@ ranker:
 
 # ---- agent loop ----
 agent:
+  enable_constraint_revision: false          # optional add/revise of branch constraints during execution
   max_loop: 6                                 # max planning iterations per query
   max_attempts: 3                             # independent discovery attempts per query; stop at the first non-empty result
   per_query_timeout_s: 1200                   # wall-clock cap on one discovery() call
@@ -46,4 +47,4 @@ result:
 navigation:
   k_1: 40                                     # reliable path pool size (Phase I)
   k_o: 6                                       # top paths surfaced to observation after rerank (Phase II)
-  d_o: 3                                       # BFS depth for relational path search
+  d_o: 3                                       # DFS depth for relational path search

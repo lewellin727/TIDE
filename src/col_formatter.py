@@ -28,10 +28,11 @@ class ColFormatter:
         else:
             content_str = self.numerical_content_str(col_values, budget)
         return prefix_str + content_str
-    
+
 
     def col_format_metadata(self, col_name, col_type, table_col=None):
         col_name = self.normalize_name(col_name)
+        # Column descriptions are unavailable; keep the serialized Description field as None.
         return f"Column: {col_name} | Type: {col_type} | Description: None"
 
     def calc_col_types(self, tables):
@@ -42,7 +43,7 @@ class ColFormatter:
                 col_types[filename][col_name] = "Numerical" if str(dtype).startswith(('int', 'float')) else "Categorical"
         self.col_types = col_types
 
-    
+
     def calc_df(self, tables):
         df_counter = Counter()
         total_categorical_columns = 0
@@ -68,7 +69,7 @@ class ColFormatter:
             df_val = self.df_counter.get(val, 0)
             idf = math.log((self.total_categorical_columns + 1) / (df_val + 1)) + 1
             tfidf_scores[val] = tf * idf
-            
+
         sorted_vals = sorted(tf_counter.keys(), key=lambda x: tfidf_scores[x], reverse=True)
         selected_vals = []
         current_tokens_len = 0
@@ -85,10 +86,10 @@ class ColFormatter:
 
 
     def numerical_content_str(self, col_values, budget):
-        nan_count = col_values.isna().sum()    
-        valid_cells = col_values.dropna() 
+        nan_count = col_values.isna().sum()
+        valid_cells = col_values.dropna()
         num_series = pd.to_numeric(valid_cells, errors='coerce').dropna()
-        
+
         if not num_series.empty:
             unique_count = num_series.nunique()
             v_min = num_series.min()
@@ -103,11 +104,11 @@ class ColFormatter:
                 f"P20: {quantiles[0.2]:.2f}, P40: {quantiles[0.4]:.2f}, P60: {quantiles[0.6]:.2f}, P80: {quantiles[0.8]:.2f}"
             )
             if len(self.tokenizer.tokenize(content_str)) > budget:
-                content_str = content_str[:budget*3] 
+                content_str = content_str[:budget*3]
         else:
             content_str = "N/A"
         return  content_str
-    
+
 
     def state_dict(self):
         return {
@@ -115,9 +116,8 @@ class ColFormatter:
             "df_counter": self.df_counter,
             "total_categorical_columns": self.total_categorical_columns
         }
-    
+
     def load_state_dict(self, state_dict):
         self.col_types = state_dict["col_types"]
         self.df_counter = state_dict["df_counter"]
         self.total_categorical_columns = state_dict["total_categorical_columns"]
-

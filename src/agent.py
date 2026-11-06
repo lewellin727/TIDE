@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import time
 from typing import List
 
 from agentscope.agent import AgentBase
@@ -23,9 +24,9 @@ from src.operators.ranker import CategoricalRanker, NumericalRanker
 
 
 PLANNING_TOOL_GROUP = "planning_operators"
-SEED_TOOL_GROUP = "seed_operator"  
+SEED_TOOL_GROUP = "seed_operator"
 
-logger = logging.getLogger("tide")
+logger = logging.getLogger("tdagent")
 
 
 def _trim_for_log(obj, limit: int = 180) -> str:
@@ -56,11 +57,14 @@ class TableAgent(AgentBase):
 
 
     def __init__(self, rel_graph, reasoning_tree, max_loop=8,
-                 k_1=10, k_o=3, d_o=2, query_idx=None):
+                 k_1=10, k_o=3, d_o=2, query_idx=None, enable_constraint_revision=False):
         super().__init__()
 
         self.rel_graph = rel_graph
         self.reasoning_tree = reasoning_tree
+        self.enable_constraint_revision = enable_constraint_revision
+        if enable_constraint_revision and not reasoning_tree.enable_constraint_revision:
+            raise ValueError("Constraint revision must also be enabled on the tree")
         self.max_loop = max_loop
         self.k_1 = k_1
         self.k_o = k_o
@@ -86,6 +90,7 @@ class TableAgent(AgentBase):
             description="Operators for table discovery planning (relationships, value filters, combiner, termination).",
             active=True,
         )
+        # Expose metadata search only for empty nodes; populated nodes continue from their current tables.
         self.toolkit.create_tool_group(
             group_name=SEED_TOOL_GROUP,
             description="Seed operator: flat name-search to open a search direction on an empty node.",
@@ -93,10 +98,10 @@ class TableAgent(AgentBase):
         )
 
         for fn in (
-            join_search, union_search, correlation_search,  
-            eq_ranker, range_ranker,                         
-            combine,                                     
-            end_search,                               
+            join_search, union_search, correlation_search,
+            eq_ranker, range_ranker,
+            combine,
+            end_search,
         ):
             self.toolkit.register_tool_function(fn, group_name=PLANNING_TOOL_GROUP)
         self.toolkit.register_tool_function(metadata_seeker, group_name=SEED_TOOL_GROUP)
@@ -104,7 +109,9 @@ class TableAgent(AgentBase):
         self.planning_sys_prompt = PLANNING_SYS_PROMPT
 
     async def discovery(self, query) -> List[Table]:
-        best_cnt = None   
+        if self.enable_constraint_revision:
+            self._revision_query = query
+        best_cnt = None
         stagnant = 0
         for loop in range(self.max_loop):
             self._loop_idx = loop + 1
@@ -130,15 +137,12 @@ class TableAgent(AgentBase):
                 len(self.reasoning_tree.get_cand_tables(self.selected_node.id)),
             )
 
-            # Observation Stage: LLM extracts structured evidence from col_constraints + paths;
-            # Python then decorates with sketch-based value-check status so the Planner sees
-            # which constraints are *actually* satisfied vs still needing a value ranker.
+            # Annotate observation evidence with sketch-based value checks before planning.
             obs_stage_prompt = self.reasoning_tree.gen_observation_stage_prompt(self.selected_node, query)
             evidence = await self.observe_llm(obs_stage_prompt)
             evidence = self._post_process_evidence(evidence)
             self._log_evidence(evidence)
 
-            # Planning Stage: LLM picks next tool call(s) using the evidence.
             planning_prompt = self.reasoning_tree.gen_planning_prompt(
                 query, self.selected_node, evidence,
             )
@@ -150,10 +154,9 @@ class TableAgent(AgentBase):
             ]
             logger.info("%s PLAN tools=%s", self._tag(), tool_names)
 
-            # Execution Stage: walk through the tool calls in msg_reasoning and update the search tree.
             await self.execution(msg_reasoning)
 
-            # No-progress guard
+            # Stop after three loops without a decrease in the minimum unresolved-constraint count.
             cur = min((n.constraint_cnt for n in self.reasoning_tree.nodes if not n.error), default=None)
             if cur is not None and (best_cnt is None or cur < best_cnt):
                 best_cnt = cur
@@ -165,6 +168,7 @@ class TableAgent(AgentBase):
                                 self._tag(), stagnant, best_cnt)
                     break
 
+        # Aggregate and rank the frontiers of all non-error leaves.
         results = self.reasoning_tree.get_results()
         rt = self.reasoning_tree
         terminated_any = any(rt.adj_dict[n.id] == [] and n.terminated for n in rt.nodes)
@@ -208,7 +212,7 @@ class TableAgent(AgentBase):
 
 
     def select_node(self):
-        # Max utility U(v) = (|s_q^0| - |v.s_q|) / depth(v)
+        # Select maximum constraint progress per depth; break ties by fewer unresolved constraints, then greater depth.
         leafs = self.reasoning_tree.get_activate_leafs()
         if not leafs:
             self.selected_node = None
@@ -225,6 +229,8 @@ class TableAgent(AgentBase):
 
         target_tables = QueryConstraint.search(leaf.col_constraints)
         cand_tables = self.reasoning_tree.get_cand_tables(leaf.id)
+
+        # Use candidates satisfying a query constraint as seeds; fall back to target tables when none qualify.
         root_cons = self.reasoning_tree._root_constraints() or leaf.col_constraints
         seeds = [t for t in cand_tables if any(QueryConstraint._satisfies(c, t) for c in root_cons)]
         if not seeds:
@@ -232,21 +238,27 @@ class TableAgent(AgentBase):
         seeds = seeds[: max(1, self.reasoning_tree.cand_top_k)]
 
         raw_paths = self.rel_graph.navigate(seeds, target_tables, d_o=self.d_o, k_1=self.k_1)
+
+        # Select paths greedily by marginal coverage outside the tree footprint.
         final_paths = rerank_paths(
             raw_paths, leaf, self.reasoning_tree, self.rel_graph, k_o=self.k_o,
         )
+
+        # Exclude starting tables from navigation results because they are already candidates.
         cand_names = {t.table_name for t in cand_tables}
         navi_table_names = list(
             {name for p in final_paths for name in p['tables']} - cand_names
         )
         tables = self.rel_graph.get_navi_tables(navi_table_names)
 
+        # Include schemas for both starting and reachable tables in the observation context.
         name_to_schema = {t.table_name: t.to_schema() for t in tables}
         for t in cand_tables:
             name_to_schema.setdefault(t.table_name, t.to_schema())
 
         paths = [render_path_with_schema(p, name_to_schema) for p in final_paths]
 
+        # Pre-check value conditions on path endpoints using the installed column sketches.
         endpoint_names = {p['endpoint'] for p in final_paths}
         endpoint_tables = self.rel_graph.get_navi_tables(list(endpoint_names))
         self._value_hints = self._precheck_value_conditions(
@@ -255,13 +267,32 @@ class TableAgent(AgentBase):
         leaf.set_navi(tables, paths)
 
     def _precheck_value_conditions(self, constraints, endpoint_tables):
+        """For every (constraint with value condition, endpoint table) pair, run
+        the appropriate sketch to determine whether the constraint's value
+        condition is already met at that endpoint.
+
+        Returns a dict keyed by (cid, endpoint_table_name) with values:
+          True  → sketch confirms the value condition holds at this endpoint
+          False → sketch was run and the condition does NOT hold
+          (key absent) → not applicable (constraint has no value condition,
+                          or the endpoint does not carry the matched column)
+
+        Sketch-based pre-check is approximate but conservative for our use:
+          Count-Min: score > 0 means value present (false positives only on rare
+                     hash collisions);
+          Equi-depth histogram: score > 0 means ≥1 value falls in the range
+                     (no false positives within bin granularity).
+        We only emit True when the sketch actively confirms; otherwise we either
+        emit False or omit the key — the Planner still has full freedom to run
+        a real value ranker (eq_ranker / range_ranker) downstream.
+        """
         hints = {}
         if not constraints or not endpoint_tables:
             return hints
         for i, c in enumerate(constraints):
             values = c.get('values') or []
             if not values:
-                continue 
+                continue
             cid = f"c{i + 1}"
             col_name = c['col_name']
             col_type = c['col_type']
@@ -282,11 +313,37 @@ class TableAgent(AgentBase):
                         ranked = NumericalRanker.rank_range([table], col_name, lo, hi) or []
                         hints[(cid, table.table_name)] = bool(ranked)
                 except Exception:
+                    # Omit unavailable checks instead of reporting a failed condition.
                     continue
         return hints
 
-    def _post_process_evidence(self, evidence):
+    @staticmethod
+    def _format_value_condition(constraint):
+        """Compact one-line description of a constraint's value condition,
+        for inclusion in the post-processed evidence so the Planner can see it."""
+        if not constraint:
+            return ""
+        values = constraint.get('values') or []
+        if not values:
+            return ""
+        if constraint['col_type'] == 'Categorical':
+            cap = 4
+            vals = [str(v) for v in values[:cap]]
+            if len(values) > cap:
+                vals.append("...")
+            return f"Categorical in {{{', '.join(vals)}}}"
+        if constraint['col_type'] == 'Numerical' and len(values) == 2:
+            lo, hi = values[0], values[1]
+            lo_s = "-∞" if lo is None else str(lo)
+            hi_s = "+∞" if hi is None else str(hi)
+            return f"Numerical in [{lo_s}, {hi_s}]"
+        return ""
 
+    def _post_process_evidence(self, evidence):
+        """Normalize the observation evidence. Observation is PERCEPTION only: it reports reachable
+        neighbour clusters (reaches/via/relates_to) and names NO operator or value ranker — the
+        Planner owns those decisions. We only ensure the lists exist.
+        """
         if not isinstance(evidence, dict):
             return evidence
         evidence["directions"] = list(evidence.get("directions") or [])
@@ -295,7 +352,10 @@ class TableAgent(AgentBase):
 
 
     async def observe_llm(self, stage_prompt):
+        """Observation Stage: call the LLM with no tools and parse its JSON evidence.
 
+        Returns the parsed dict on success, or None if all retries failed.
+        """
         self.toolkit.update_tool_groups([PLANNING_TOOL_GROUP, SEED_TOOL_GROUP], active=False)
         try:
             hint = (
@@ -366,6 +426,7 @@ class TableAgent(AgentBase):
         original_prompt = planning_prompt
 
         msg_reasoning = None
+        # Request a tool call again if the preceding response contained none.
         retry_hint = (
             "\n\n--- RETRY NOTICE ---\n"
             "Your previous response contained no tool call. You MUST call at least one "
@@ -400,6 +461,11 @@ class TableAgent(AgentBase):
 
 
     async def execution(self, msg_reasoning) -> None:
+        """Walk msg_reasoning.content in order and execute each tool_use block,
+        spawning a child node per successful operator call.
+        """
+        revision_children = []
+        # Record the planned operations before execution expands the node.
         self.selected_node.s_p = [
             {"operator": b.get("name"), "input": b.get("input")}
             for b in msg_reasoning.content
@@ -412,12 +478,13 @@ class TableAgent(AgentBase):
                 continue
 
             tool_call = block
+            # Skip operator-input pairs already attempted anywhere in the tree.
             _op = tool_call.get("name")
             if _op != "end_search" and self.reasoning_tree.already_tried(_op, tool_call.get("input")):
                 logger.info("%s SKIPPED_REPEAT op=%s input=%s", self._tag(), _op,
                             _trim_for_log(tool_call.get("input")))
                 continue
-
+            # Enforce the empty-node restriction even if the planner emits a hidden metadata tool.
             if _op == "metadata_seeker" and self.selected_node.input_tables:
                 logger.info("%s METADATA_BLOCKED (node already holds %d tables — must traverse) input=%s",
                             self._tag(), len(self.selected_node.input_tables),
@@ -429,6 +496,7 @@ class TableAgent(AgentBase):
                 output = output_blocks[0] if output_blocks else None
                 operator = tool_call["name"]
 
+                # AgentScope may return tool errors as text; record them as failures so the planner can respond.
                 output_text = ""
                 if output is not None:
                     output_text = (
@@ -466,6 +534,8 @@ class TableAgent(AgentBase):
                         valid=False,
                     )
                     new_child = self.reasoning_tree.nodes[-1]
+                    if self.enable_constraint_revision and tables and not new_child.end:
+                        revision_children.append((new_child, operator, input_param))
                     logger.info(
                         "%s EXEC op=%s input=%s → child=%s tables=%d unresolved_constraints=%d",
                         self._tag(), operator, _trim_for_log(input_param),
@@ -484,8 +554,57 @@ class TableAgent(AgentBase):
                     "%s EXEC op=%s raised exception",
                     self._tag(), tool_call.get('name', 'unknown'),
                 )
+        if self.enable_constraint_revision and revision_children:
+            await self._revise_execution_constraints(revision_children)
         return None
 
+
+    async def _revise_execution_constraints(self, children):
+        """One optional call; invalid output preserves the already verified child state."""
+        started = time.monotonic()
+        try:
+            content = QueryConstraint.revision_prompt(self._revision_query, children)
+            prompt = await self.formatter.format([Msg("user", content, "user")])
+            response = await self.model(prompt, tools=[], tool_choice="none")
+            in_tok, out_tok = _record_usage(response)
+            logger.info("%s LLM stage=constraint_revision attempt=1 in_tok=%d out_tok=%d elapsed=%.3fs",
+                        self._tag(), in_tok, out_tok, time.monotonic() - started)
+            raw = self._extract_text(response)
+            logger.info("%s CONSTRAINT_REVISION_RESPONSE %s", self._tag(), raw)
+            parsed = self._parse_json(raw)
+            if not isinstance(parsed, dict) or set(parsed) != {"nodes"} or not isinstance(parsed["nodes"], list):
+                raise ValueError("Expected a nodes array")
+            known = {n.id for n, _, _ in children}
+            patches = {}
+            for patch in parsed["nodes"]:
+                if not isinstance(patch, dict) or not isinstance(patch.get("node_id"), str):
+                    raise ValueError("Invalid node patch")
+                node_id = patch["node_id"]
+                if node_id not in known or node_id in patches:
+                    raise ValueError("Unknown or repeated node id")
+                patches[node_id] = patch
+        except Exception as exc:
+            logger.warning("%s CONSTRAINT_REVISION_FALLBACK elapsed=%.3fs error=%s",
+                           self._tag(), time.monotonic() - started, str(exc))
+            return
+        for node, operator, inputs in children:
+            patch = patches.get(node.id)
+            if patch is None:
+                continue
+            before = (node.full_constraints, node.input_constraints, node.col_constraints, node.constraint_cnt)
+            try:
+                full, pending = QueryConstraint.apply_revision(before[0], before[1], patch)
+                if full == before[0] and pending == before[1]:
+                    continue
+                node.full_constraints, node.input_constraints = full, pending
+                self.reasoning_tree._resolve_constraints(node, operator, inputs)
+                logger.info("%s CONSTRAINT_REVISION node=%s before=%s after=%s unresolved=%s",
+                            self._tag(), node.id, json.dumps(before[0], ensure_ascii=False),
+                            json.dumps(full, ensure_ascii=False), json.dumps(node.col_constraints, ensure_ascii=False))
+            except Exception as exc:
+                node.full_constraints, node.input_constraints, node.col_constraints, node.constraint_cnt = before
+                logger.warning("%s CONSTRAINT_REVISION_FALLBACK node=%s error=%s",
+                               self._tag(), node.id, str(exc))
 
     async def tool_use(self, tool_call: ToolUseBlock):
         tool_res = await self.toolkit.call_tool_function(tool_call)
@@ -495,8 +614,15 @@ class TableAgent(AgentBase):
 
 
     def check(self, msg_reasoning):
+        """Pass if at least one tool_use block exists. Text/thinking blocks coexist fine."""
         for content in msg_reasoning.content:
             btype = content.get('type') if isinstance(content, dict) else getattr(content, 'type', None)
             if btype == 'tool_use':
                 return True
         return False
+
+
+    def set_tree(self, reasoning_tree):
+        self.reasoning_tree = reasoning_tree
+        self.selected_node = None
+        tool_ctx.set_reasoning_tree(reasoning_tree)

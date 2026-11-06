@@ -14,10 +14,17 @@ env/
 .idea/
 .vscode/
 
-vdb/                       # vector-index + sketch cache (built on first run)
-results/                   # discovery outputs (main.py)
-eval/                      # evaluation reports (eval.py)
-logs/                      # run logs
+vdb/
+results/
+eval/
+logs/
 
 TIDEdataset/dataset/
 TIDEdataset/log/
+
+# Local credentials and development-only experiments
+.env
+.env.*
+!.env.example
+/baselines/
+/micro_benchmark/

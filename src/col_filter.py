@@ -17,8 +17,8 @@ class CategoricalFrequencyFilter:
             self.depth = int(math.ceil(math.log(1 / (1 - confidence))))
             self.table = np.zeros((self.depth, self.width), dtype=int)
             self.p = (1 << 31) - 1
-            
-            random.seed(seed) 
+
+            random.seed(seed)
             self.hash_params = []
             for _ in range(self.depth):
                 a = random.randint(1, self.p - 1)
@@ -28,6 +28,7 @@ class CategoricalFrequencyFilter:
                 self.add(v)
 
     def _hash(self, item, row_idx):
+        # Use a stable hash so cached sketches remain valid across Python processes.
         base_val = int.from_bytes(hashlib.md5(str(item).encode("utf-8")).digest()[:4], "big")
         a, b = self.hash_params[row_idx]
         return ((a * base_val + b) % self.p) % self.width
@@ -41,7 +42,7 @@ class CategoricalFrequencyFilter:
     def get_frequency_score(self, item):
         if self.total_count == 0:
             return 0.0
-        
+
         min_count = float('inf')
         for i in range(self.depth):
             col = self._hash(item, i)
@@ -57,9 +58,9 @@ class CategoricalFrequencyFilter:
             'depth': self.depth,
             'p': self.p,
             'hash_params': self.hash_params,
-            'table': self.table 
+            'table': self.table
         }
-    
+
     def load_state_dict(self, state_dict):
         self.total_count = state_dict['total_count']
         self.width = state_dict['width']
@@ -91,17 +92,17 @@ class CategoricalOverlapFilter:
 
     def _hash_h(self, key) -> int:
         hash_hex = hashlib.md5(str(key).encode('utf-8')).hexdigest()
-        return int(hash_hex[:8], 16)  
+        return int(hash_hex[:8], 16)
 
     def _hash_hu(self, key) -> float:
         hash_hex = hashlib.sha256(str(key).encode('utf-8')).hexdigest()
         return int(hash_hex[:16], 16) / (16**16 - 1)
-    
+
     def state_dict(self):
         return {
             'n': self.n,
             'col_name': self.key_col,
-            'sketch_df': self.sketch_df  
+            'sketch_df': self.sketch_df
         }
 
     def load_state_dict(self, state_dict):
@@ -110,7 +111,7 @@ class CategoricalOverlapFilter:
         self.sketch_df = state_dict['sketch_df'].copy() if state_dict['sketch_df'] is not None else None
 
 
-    def get_overlap_score(self, sketch_2): 
+    def get_overlap_score(self, sketch_2):
         actual_n = min(self.n, len(self.sketch_df), len(sketch_2))
         hu_A = self.sketch_df['hu_k'].values[:self.n]
         hu_B = sketch_2['hu_k'].values[:self.n]
@@ -121,7 +122,7 @@ class CategoricalOverlapFilter:
 
         jaccard = overlap_count / actual_n if actual_n > 0 else 0.0
         return jaccard
-    
+
     def get_corr_score(self, col_1, sketch_2, col_2):
         df1 = self.sketch_df[['h_k', self.key_col, col_1]]
         df2 = sketch_2[['h_k', col_2]]
@@ -164,7 +165,7 @@ class NumericalFilter:
         if state_dict is not None:
             self.load_state_dict(state_dict)
         else:
-            values = df[col_name].dropna()  
+            values = df[col_name].dropna()
             self.total_count = len(values)
             quantiles = np.linspace(0, 100, num_bins + 1)
             self.bin_edges = np.percentile(values, quantiles)
@@ -173,13 +174,13 @@ class NumericalFilter:
     def get_range_score(self, min_val, max_val):
         min_val = float('-inf') if min_val is None else min_val
         max_val = float('inf') if max_val is None else max_val
-        
+
         estimated_count = 0.0
         for i in range(len(self.counts)):
             left_edge = self.bin_edges[i]
             right_edge = self.bin_edges[i+1]
             bucket_count = self.counts[i]
-            
+
             if bucket_count == 0:
                 continue
             if right_edge < min_val or left_edge > max_val:
@@ -195,7 +196,7 @@ class NumericalFilter:
                 else:
                     estimated_count += bucket_count
         return estimated_count / self.total_count
-    
+
     def state_dict(self):
         return {
             'total_count': self.total_count,
@@ -231,3 +232,6 @@ class ColFilter:
             self.filter = CategoricalFilter(df=None, col_name=None, state_dict=state_dict)
         else:
             self.filter = NumericalFilter(df=None, col_name=None, state_dict=state_dict)
+
+    def get_score(self):
+        pass

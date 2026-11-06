@@ -5,7 +5,9 @@ from src.col_name_matcher import ColNameMatcher
 
 class CategoricalRanker:
     filter_ins_dict = None
+    # 'abs' accepts either correlation sign; 'positive' accepts only positive correlations.
     correlation_sign_mode = 'abs'
+    # Minimum correlation score under the selected sign mode.
     correlation_score_threshold = 0.5
 
     @classmethod
@@ -16,8 +18,6 @@ class CategoricalRanker:
                 ranker = cls.filter_ins_dict[table.table_name][matched]
                 score = ranker.filter.frequency_filter.get_frequency_score(value)
                 table.score = score
-                table.matched_column = matched   
-                table.predicate = 'eq'        
             else:
                 table.score = 0.0
 
@@ -35,6 +35,7 @@ class CategoricalRanker:
 
     @classmethod
     def rank_overlap(cls, tables_1: List[Table], tables_2: List[Table], join_col_name: str, top_k=50) -> List[Table]:
+        # Match source and candidate column names independently.
         filtered_1 = []
         for t_1 in tables_1:
             m1 = ColNameMatcher.find_match(join_col_name, list(t_1.df.columns))
@@ -54,8 +55,6 @@ class CategoricalRanker:
                 t_1_sketch = cls.filter_ins_dict[t_1.table_name][m1].filter.overlap_filter.sketch_df
                 score += t_2_ranker.filter.overlap_filter.get_overlap_score(t_1_sketch)
             t_2.score = score
-            t_2.matched_column = m2        
-            t_2.predicate = 'overlap'     
 
         ranked_tables_2 = [t_2 for t_2, _ in filtered_2 if t_2.score > 0]
 
@@ -108,20 +107,17 @@ class CategoricalRanker:
 
         for t_2, j2, num_cols in filtered_2:
             max_score = 0.0
-            best_col = None
             t_2_ranker = cls.filter_ins_dict[t_2.table_name][j2]
             for target_col in num_cols:
                 col_score = 0.0
                 for t_1, j1, c1 in filtered_1:
                     t_1_sketch = cls.filter_ins_dict[t_1.table_name][j1].filter.overlap_filter.sketch_df
                     col_score += t_2_ranker.filter.overlap_filter.get_corr_score(target_col, t_1_sketch, c1)
+                # Compare and store scores under the same correlation sign mode.
                 score_compare = abs(col_score) if sign_mode == 'abs' else col_score
                 if score_compare > max_score:
                     max_score = score_compare
-                    best_col = target_col
             t_2.score = max_score
-            t_2.matched_column = (best_col, j2) if best_col is not None else j2
-            t_2.predicate = 'corr'
 
         ranked_tables_2 = [t_2 for t_2, _, _ in filtered_2 if t_2.score > threshold]
         if not ranked_tables_2:
@@ -146,8 +142,6 @@ class NumericalRanker:
                 ranker = cls.filter_ins_dict[table.table_name][matched]
                 score = ranker.filter.get_range_score(min_val, max_val)
                 table.score = score
-                table.matched_column = matched  
-                table.predicate = 'range'        
             else:
                 table.score = 0.0
 

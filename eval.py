@@ -28,14 +28,14 @@ def calculate_metrics(ground_truth_tables, predicted_tables, k):
     # NDCG@k
     dcg = sum(1.0 / np.log2(i + 2) for i, p in enumerate(pred_list_k) if p in gt_set)
     idcg = sum(1.0 / np.log2(i + 2) for i in range(min(k, len(gt_set))))
-    
+
     ndcg = dcg / idcg if idcg > 0 else 0.0
 
     return precision, recall, ndcg, recall_gt
 
 def eval_results(metadata_path, results_path, output_path, k_values=[1, 3, 5, 8, 10, 15, 20]):
     print("\n--- Starting Evaluation ---")
-    
+
     if not os.path.exists(metadata_path):
         print(f"Error: metadata.json not found at {metadata_path}")
         return
@@ -45,10 +45,10 @@ def eval_results(metadata_path, results_path, output_path, k_values=[1, 3, 5, 8,
 
     with open(metadata_path, 'r') as f:
         metadata = json.load(f)
-        
+
     with open(results_path, 'r') as f:
         results = json.load(f)
-    
+
     gt_dict = {}
     for meta in metadata:
         query_id = meta.get('id')
@@ -79,6 +79,9 @@ def eval_results(metadata_path, results_path, output_path, k_values=[1, 3, 5, 8,
 
         n_total += 1
         if not candidates:
+            # Unsuccessful execution: COUNTED AS ZERO (P=R=NDCG=0 via calculate_metrics)
+            # and kept in the denominator, so P/R/NDCG are averaged over ALL queries. The
+            # success rate is still reported separately below.
             print(f"Warning: No candidates for query idx {res_idx} (counted as 0)")
         else:
             n_success += 1

@@ -6,8 +6,6 @@ class Table:
         self.df = df
         self.score = score
         self.schema = None
-        self.matched_column = None   
-        self.predicate = None     
 
 
     def get_column(self, col_name):
@@ -18,7 +16,7 @@ class Table:
             "col_type": "Numerical" if str(dtype).startswith(('int', 'float')) else "Categorical",
             "values": self.df[col_name]
         }
-    
+
 
     def to_schema(self):
         return self.df.columns.tolist()
@@ -27,9 +25,9 @@ class Table:
         return {
             'table_name': self.table_name,
             'score': self.score,
-            'df': self.df.to_dict()  
+            'df': self.df.to_dict()
         }
-    
+
     @staticmethod
     def load(state_dict):
         table_name = state_dict['table_name']

@@ -25,7 +25,7 @@ class VDBSearcher:
         self.filter_dict = {}
         self.col_formatter = col_formatter
         self.emb_batch_size = emb_batch_size
-        self.score_threshold = float(score_threshold)  
+        self.score_threshold = float(score_threshold)
 
         print("Loading embedding model...")
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -38,9 +38,9 @@ class VDBSearcher:
         self.model.eval()
 
         self.build_vdb()
-        
+
     def build_vdb(self):
-        
+
         if os.path.exists(self.filter_dict_path) and os.path.exists(self.formatter_path) and os.path.exists(self.src_file_path):
             print("Loading existing filter, formatter, and source data ...")
             self.filter_dict = joblib.load(self.filter_dict_path)
@@ -59,7 +59,7 @@ class VDBSearcher:
             joblib.dump(self.col_formatter.state_dict(), self.formatter_path)
             with open(self.src_file_path, "w", encoding="utf-8") as src_file:
                 json.dump(cols, src_file, indent=4, ensure_ascii=False)
-        
+
         if os.path.exists(self.metadata_index_path) and os.path.exists(self.column_index_path):
             print("Loading existing VDB indexes...")
         else:
@@ -86,6 +86,7 @@ class VDBSearcher:
             print("Databases built and saved successfully!")
         self.index_metadata = faiss.read_index(self.metadata_index_path)
         self.index_column = faiss.read_index(self.column_index_path)
+        # Set efSearch once during initialization to avoid concurrent searches mutating shared index settings.
         self.index_metadata.hnsw.efSearch = 1024
         self.index_column.hnsw.efSearch = 1024
 
@@ -100,7 +101,7 @@ class VDBSearcher:
                 tables[filename.split(".")[0]] = df
         return tables
 
-    def extract_cols(self, tables):    
+    def extract_cols(self, tables):
         column_representations = []
         for tabel_name, df in tqdm(tables.items(), desc="Formatting Columns"):
             table_columns =  df.columns.tolist()
@@ -157,12 +158,11 @@ class VDBSearcher:
         if search_type not in ["metadata", "column"]:
             raise ValueError("search_type must be either 'metadata' or 'column'")
 
-
         query_emb = self.get_embedding(query)
         target_index = self.index_metadata if search_type == "metadata" else self.index_column
-
+        # Keep efSearch fixed during concurrent searches.
         distances, indices = target_index.search(query_emb, top_k)
-    
+
         results = []
         for i in range(top_k):
             if i >= len(indices[0]):
@@ -173,7 +173,7 @@ class VDBSearcher:
                 continue
             matched_col_data = self.cols_data[idx]
             results.append({
-                "score": float(score), 
+                "score": float(score),
                 "data": matched_col_data
             })
         return results

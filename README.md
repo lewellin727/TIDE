@@ -9,15 +9,16 @@ plan cannot be inferred from the query text alone.
 TIDE couples two components:
 
 - **Constraint-level operators** — a composable action space of *seekers* (ground NL descriptors),
-  *rankers* (verify value/relational predicates), and *combiners* (compose partial results), under a
+  *rankers* (score value/relational conditions), and *combiners* (compose partial results), under a
   uniform binding-level contract. Classical join / union / correlation / NL search are recovered as
   fine-grained compositions of these operators.
 - **Lake-grounded tree reasoning** — a constraint-guided discovery tree whose expansion is grounded
   in a precomputed table relationship graph via relationship-aware observation, then advanced by an
   observe–plan–execute loop with verified constraint updates.
 
-On a new benchmark of 5 data lakes (38,334 tables, 261 queries), TIDE outperforms 5 state-of-the-art
-baselines by up to **67% in precision** and **53% in recall**.
+On a benchmark of 5 data lakes (38,334 tables, 261 queries), we compare TIDE with 5 NL table
+retrievers and 2 agentic baselines. With DeepSeek-V4-Pro, TIDE improves average **P@10 by 86%**
+and **R@40 by 41%** over the strongest baselines.
 
 > The benchmark generator lives in [`TIDEdataset/`](TIDEdataset/) — see its README to build the data.
 
@@ -50,13 +51,13 @@ TIDE/
 │   ├── query_constraint.py    # parse the query into structured column constraints s_q
 │   ├── operators/
 │   │   ├── seeker.py          # content / context seekers (ground NL descriptors)
-│   │   ├── ranker.py          # eq / range / overlap / corr rankers (verify predicates)
+│   │   ├── ranker.py          # eq / range / overlap / corr rankers (score verification conditions)
 │   │   └── tool.py            # the agent's action space (operators + combiner + terminate)
 │   ├── col_filter.py          # per-column sketches: Count-Min, equi-depth histogram, KMV
 │   ├── col_formatter.py       # column content / context serialization for embedding
 │   ├── col_name_matcher.py    # semantic column-name matching (bridges renamed columns)
 │   ├── vdb_searcher.py        # FAISS HNSW vector index over column/metadata embeddings
-│   ├── table.py               # Table abstraction + binding fields ⟨matched column, predicate⟩
+│   ├── table.py               # Table abstraction + matched-column metadata and scores
 │   └── utils.py               # operator wiring, prompt templates, token accounting
 └── TIDEdataset/               # benchmark generator (separate README)
 ```
@@ -113,13 +114,12 @@ Precision@k, Recall@k, and NDCG@k against each split's `metadata.json`.
 
 ## 🔍 How it works
 
-**Constraint-level operators (paper §4).** Every operator returns a binding-level result set of
-bindings ⟨host table, matched column, satisfied predicate, score⟩:
+**Constraint-level operators (paper §4).** Operators return candidate tables with grounded columns and scores:
 
 - *Seekers* ([`seeker.py`](src/operators/seeker.py)) ground an NL descriptor to candidate columns via
   two complementary signals — content (name + values) and context (description) — each embedded and
   indexed with HNSW ([`vdb_searcher.py`](src/vdb_searcher.py)).
-- *Rankers* ([`ranker.py`](src/operators/ranker.py)) verify a predicate over candidates:
+- *Rankers* ([`ranker.py`](src/operators/ranker.py)) score candidates against verification requirements:
   `eq` (Count-Min), `range` (equi-depth histogram), `overlap` and `corr` (KMV sketch) —
   all in [`col_filter.py`](src/col_filter.py).
 - *Combiners* ([`tool.py`](src/operators/tool.py)) compose partial results with set operations
@@ -147,10 +147,16 @@ All knobs live in [`config.yaml`](config.yaml); paths are relative to the repo r
 | `emb_model_path` | embedding model (HF id or local path) |
 | `llm_backbone` | planner / constraint-extractor LLM (`deepseek-v4-pro` \| `qwen3.7-max`) |
 | `col_match_threshold`, `vdb_score_threshold` | cosine floors for column-name matching / vector search |
-| `ranker.*` | correlation sign mode / threshold, numerical-predicate fraction |
+| `ranker.*` | correlation sign mode / threshold, numerical range fraction |
 | `agent.max_loop`, `agent.max_attempts`, `agent.per_query_timeout_s`, `agent.concurrency` | planning budget, discovery attempts per query, per-query timeout, concurrency |
+| `agent.enable_constraint_revision` | optional branch-constraint revision during execution (default: `false`) |
 | `tree.cand_top_k` | per-node candidate cap shown to the planner |
 | `tools.result_cap` | max tables returned by one operator call |
 | `result.final_top_k`, `result.final_min_constraint_match` | output cap, per-table constraint filter |
-| `navigation.k_1`, `navigation.k_o`, `navigation.d_o` | reliable path pool, paths surfaced to observation, BFS depth |
+| `navigation.k_1`, `navigation.k_o`, `navigation.d_o` | reliable path pool, paths surfaced to observation, DFS depth |
 
+
+Constraint revision is disabled by default. When enabled, execution can use one additional LLM
+call per stage to add overlooked requirements or revise inherited constraints for successful
+child branches. Updated constraints are verified against returned tables, and final ranking uses
+each branch's complete revised requirements. Leave this option disabled to use the evaluated workflow.

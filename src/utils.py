@@ -7,7 +7,6 @@ from src.col_name_matcher import ColNameMatcher
 from src.operators.seeker import ContentSeeker, ContextSeeker
 from src.operators.ranker import CategoricalRanker, NumericalRanker
 
-
 def _llm_backbone():
     cfg = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.yaml")
     try:
@@ -20,7 +19,12 @@ LLM_BACKBONE = _llm_backbone()   # planner / constraint-extractor LLM, from conf
 
 def init_operators(vdb_searcher, col_match_threshold: float = 0.95, embedding_model=None,
                    ranker_cfg: dict | None = None):
+    """Wire all class-level operator state up from the loaded config.
 
+    `ranker_cfg` keys (all optional):
+      - correlation_sign_mode: 'abs' | 'positive'
+      - correlation_score_threshold: float
+    """
     ContentSeeker.vdb_searcher = vdb_searcher
     ContextSeeker.vdb_searcher = vdb_searcher
 
@@ -39,7 +43,7 @@ def init_operators(vdb_searcher, col_match_threshold: float = 0.95, embedding_mo
             CategoricalRanker.correlation_score_threshold = float(ranker_cfg['correlation_score_threshold'])
 
     if embedding_model is None:
-        from src.query_constraint import QueryConstraint  
+        from src.query_constraint import QueryConstraint  # Avoid a circular import.
         embedding_model = QueryConstraint.model
     if embedding_model is None:
         raise RuntimeError(
@@ -48,6 +52,7 @@ def init_operators(vdb_searcher, col_match_threshold: float = 0.95, embedding_mo
         )
     ColNameMatcher.init(model=embedding_model, threshold=col_match_threshold)
 
+    # Precompute lake column embeddings; add_filter handles query columns later.
     all_col_names = []
     for table_name, col_map in vdb_searcher.filter_dict.items():
         all_col_names.extend(col_map.keys())
@@ -55,8 +60,19 @@ def init_operators(vdb_searcher, col_match_threshold: float = 0.95, embedding_mo
 
 
 def add_filter(query_table, filter_dir):
+    """Install per-column ColFilter sketches for a query_table into the rankers'
+    shared `filter_ins_dict`. Idempotent (safe to call from concurrent queries):
+    if the table's entries already exist, return without rebuilding.
+
+    Concurrency note: under parallel-query execution, the previous-design
+    eviction of the prior query_table's entries was a crash race — a still-
+    running discovery for query_table_A would KeyError when query_table_B's
+    add_filter popped A's entries mid-flight. We now KEEP all query_table
+    entries for the lifetime of the process; with ~57 queries × ~8 cols at a
+    few dozen KB per ColFilter, the memory cost is < 50 MB.
+    """
     if query_table.table_name in CategoricalRanker.filter_ins_dict:
-        return 
+        return
 
     ColNameMatcher.precompute(list(query_table.df.columns))
     new_entries = {}
@@ -68,12 +84,16 @@ def add_filter(query_table, filter_dir):
             filter_dir,
             f"{query_table.table_name}_{col_name}",
         )
+    # Share the same column filters between both rankers.
     CategoricalRanker.filter_ins_dict[query_table.table_name] = new_entries
     NumericalRanker.filter_ins_dict[query_table.table_name] = new_entries
 
 
+# Each query owns a mutable counter dictionary stored in a ContextVar.
+# Child tasks and threads inherit the dictionary reference, so their updates
+# remain visible to the parent while separate queries keep separate counters.
 _token_counter_var: "contextvars.ContextVar" = contextvars.ContextVar(
-    "tide_token_counter", default=None
+    "tdagent_token_counter", default=None
 )
 
 
@@ -84,7 +104,7 @@ def reset_token_counter() -> None:
 def add_token_usage(input_tokens: int, output_tokens: int) -> None:
     counter = _token_counter_var.get()
     if counter is None:
-        return  
+        return
     if input_tokens:
         counter["input"] += int(input_tokens)
     if output_tokens:
@@ -96,7 +116,7 @@ def get_token_counter() -> dict:
     counter = _token_counter_var.get()
     if counter is None:
         return {"input": 0, "output": 0, "calls": 0}
-    return dict(counter) 
+    return dict(counter)
 
 
 def llm_generate(prompt):
@@ -120,9 +140,7 @@ def llm_generate(prompt):
 
 
 
-# ===================================================================================================================
-# ========================================== PROMPT TEMPLATES =======================================================
-# ===================================================================================================================
+# Prompt templates
 
 COL_CONSTRAINT_PROMPT = """# Role
 A column-constraint extractor for table-discovery queries.
@@ -260,6 +278,7 @@ OBSERVATION_STAGE_TEMPLATE = """## Query
 {paths}
 """
 
+# Planning hint when all query constraints are satisfied.
 COL_CONSTRAINTS_SATISFIED_HINT = (
     "All column constraints are satisfied. Check whether the search is complete based on "
     "the user query and the operator history; if so, call `end_search` to terminate."
@@ -267,7 +286,12 @@ COL_CONSTRAINTS_SATISFIED_HINT = (
 
 
 def render_evidence(evidence) -> str:
+    """Render the observation EVIDENCE (reachable neighbour clusters) as LLM-friendly markdown.
 
+    This is PERCEPTION, not instruction: each cluster says what columns it `reaches`, the bridge
+    it connects `via`, and which constraints it `relates_to`. It names NO operator — the Planner
+    decides what to do with this evidence. Plus any `stuck` constraints no path reached.
+    """
     if evidence is None:
         return "Observation stage failed; evidence unavailable."
     if not isinstance(evidence, dict) or not evidence:
@@ -303,4 +327,3 @@ def render_evidence(evidence) -> str:
     if not parts:
         return "None."
     return "\n".join(parts)
-

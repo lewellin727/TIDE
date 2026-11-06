@@ -15,6 +15,21 @@ def names2table(tables_dict, lakes_dir):
 
 
 def _aggregate_coverage(per_col_target_score: dict, n_queried: int) -> dict:
+    """Combine per-(queried-col, target-table) best scores into a single score per
+    target table, weighting by how MANY of the queried columns were matched.
+
+        table_score = (matched_cols / n_queried)² × mean(matched_scores)
+
+    Rationale: previously `ContentSeeker` used `max()` (entirely throws away the
+    "matched multiple columns" signal — unionability of 6 columns scored the
+    same as 1) and `ContextSeeker` used `sum()` (a single high-scoring column
+    could dominate a table that matched many columns with moderate scores).
+    Coverage² strongly penalises partial matches: 6/6 → 1.0, 1/6 → 0.028.
+
+    For single-column queries (n_queried == 1) this collapses to the raw best
+    score, so single-column seekers like `join_search` / `correlation_search`
+    and the relationship-graph build are unaffected.
+    """
     target_tables = set()
     for per_target in per_col_target_score.values():
         target_tables.update(per_target.keys())
@@ -35,6 +50,7 @@ def _aggregate_coverage(per_col_target_score: dict, n_queried: int) -> dict:
 
 
 def _take_top_k_normalized(table_2_score: dict, top_k: int) -> dict:
+    """Pick top-k by score, then L1-normalise for downstream usage."""
     top_k_keys = heapq.nlargest(top_k, table_2_score, key=table_2_score.get)
     top_k_items = {key: table_2_score[key] for key in top_k_keys}
     total = sum(top_k_items.values())
@@ -49,12 +65,11 @@ class ContentSeeker:
 
     @classmethod
     def search(cls, tables: List[Table], col_names: List[str], top_k: int = 20) -> List[Table]:
-
+        # Keep the strongest table match for each queried column name across all source tables.
         per_col_target_score: dict = {col_name: {} for col_name in col_names}
-        target_best_col: dict = {}
-        target_best_score: dict = {}
         for table in tables:
             for col_name in col_names:
+                # Resolve source columns with the same semantic matcher used by rankers.
                 matched = ColNameMatcher.find_match(col_name, list(table.df.columns))
                 if not matched:
                     continue
@@ -71,9 +86,6 @@ class ContentSeeker:
                     score = cd['score']
                     if score > bucket.get(target, 0.0):
                         bucket[target] = score
-                    if score > target_best_score.get(target, -1.0):
-                        target_best_score[target] = score
-                        target_best_col[target] = cd['data'].get('column_name')
 
         table_2_score = _aggregate_coverage(per_col_target_score, len(col_names))
         if not table_2_score:
@@ -81,11 +93,7 @@ class ContentSeeker:
         tables_dict = _take_top_k_normalized(table_2_score, top_k)
         if not tables_dict:
             return None
-        result = names2table(tables_dict, cls.vdb_searcher.lakes_dir)
-        for t in result:
-            t.matched_column = target_best_col.get(t.table_name)  
-            t.predicate = 'sem'                            
-        return result
+        return names2table(tables_dict, cls.vdb_searcher.lakes_dir)
 
 
 
@@ -96,8 +104,6 @@ class ContextSeeker:
     @classmethod
     def search(cls, col_names: List[str], col_types: List[str], top_k: int = 20) -> List[Table]:
         per_col_target_score: dict = {col_name: {} for col_name in col_names}
-        target_best_col: dict = {}
-        target_best_score: dict = {}
         for (col_name, col_type) in zip(col_names, col_types):
             metadata_str = cls.vdb_searcher.col_formatter.col_format_metadata(col_name, col_type, None)
             col_data = cls.vdb_searcher.search(metadata_str, "metadata")
@@ -107,9 +113,6 @@ class ContextSeeker:
                 score = cd['score']
                 if score > bucket.get(target, 0.0):
                     bucket[target] = score
-                if score > target_best_score.get(target, -1.0):
-                    target_best_score[target] = score
-                    target_best_col[target] = cd['data'].get('column_name')
 
         table_2_score = _aggregate_coverage(per_col_target_score, len(col_names))
         if not table_2_score:
@@ -117,9 +120,4 @@ class ContextSeeker:
         tables_dict = _take_top_k_normalized(table_2_score, top_k)
         if not tables_dict:
             return None
-        result = names2table(tables_dict, cls.vdb_searcher.lakes_dir)
-        for t in result:
-            t.matched_column = target_best_col.get(t.table_name)  
-            t.predicate = 'sem'                          
-        return result
-
+        return names2table(tables_dict, cls.vdb_searcher.lakes_dir)

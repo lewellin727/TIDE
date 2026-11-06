@@ -9,29 +9,21 @@ from src.operators.seeker import ContentSeeker, ContextSeeker
 from src.operators.ranker import CategoricalRanker, NumericalRanker
 
 
-# ==== tool execution context (set by the agent before each tool call) ====
-#
-# Per-call output-cap cascade: VDB search (512) -> seekers (top_k) -> rankers (top_k=50)
-# -> _cap (config.tools.result_cap) -> ReasoningTree.get_cand_tables (config.tree.cand_top_k).
-#
-# Rankers mutate `t.score` in place, but every call starts from a fresh Table list
-# (names2table reads CSV; get_navi_tables wraps the cached df anew), so two nodes never
-# share a Table instance and an in-place mutation cannot corrupt another node.
-#
-# The per-call state below is held in ContextVars so concurrent query tasks stay isolated;
-# `_result_cap` is set once at startup and read-only afterwards.
+# Tool execution context is isolated per async query via ContextVars.
+# Keep retrieved Table wrappers independent because rankers mutate their scores.
+# The per-tool result cap is shared and configured once at startup.
 
 _reasoning_tree_var: "contextvars.ContextVar" = contextvars.ContextVar(
-    "tide_reasoning_tree", default=None
+    "tdagent_reasoning_tree", default=None
 )
 _current_node_id_var: "contextvars.ContextVar" = contextvars.ContextVar(
-    "tide_current_node_id", default=None
+    "tdagent_current_node_id", default=None
 )
 _last_tool_result_var: "contextvars.ContextVar" = contextvars.ContextVar(
-    "tide_last_tool_result", default=None
+    "tdagent_last_tool_result", default=None
 )
 
-_result_cap: int = 20  # process-global startup config (read-only after init)
+_result_cap: int = 20  # Shared configuration; read-only after initialization.
 
 
 def set_reasoning_tree(reasoning_tree) -> None:
@@ -40,11 +32,13 @@ def set_reasoning_tree(reasoning_tree) -> None:
 
 def set_current_node(node_id) -> None:
     _current_node_id_var.set(str(node_id) if node_id is not None else None)
-    _last_tool_result_var.set([])  # fresh slate for each tool call
+    _last_tool_result_var.set([])
 
 
 def set_result_cap(cap: int) -> None:
-    """Set the per-tool-call output cap (config.tools.result_cap), once at startup."""
+    """Configure the per-tool-call output cap (M3).
+    Called once at startup from main.py with the `tools.result_cap` config value.
+    """
     global _result_cap
     _result_cap = max(1, int(cap))
 
@@ -66,9 +60,10 @@ def _fetch_node_tables(node_id: str, in_trajectory: bool = True) -> List[Table]:
     `ancestors + current` so a single trajectory's src_node_id stays linear.
 
     `in_trajectory=False` (used by combiners): allow any non-error node anywhere
-    in the tree, so combiners can compose intermediate candidates across
-    iterations (including sibling trajectories); restricting them to
-    ancestors+current would make intersection/union/difference useless.
+    in the tree. This matches paper Sec 3.3, which states combiners compose
+    intermediate candidates *across discovery iterations* — including sibling
+    trajectories. Restricting combiners to ancestors+current makes the
+    intersection/union/difference operators useless for their primary purpose.
     """
     tree = _reasoning_tree_var.get()
     current_id = _current_node_id_var.get()
@@ -135,10 +130,18 @@ def _coerce_optional_float(x):
     return float(x)
 
 
-# ==== seekers ====
+# Seekers
 
 def column_seeker(src_node_id: str, column_names: List[str]) -> ToolResponse:
-    """Find tables that share cell values with the source node's `column_names`."""
+    """Find tables that share cell values with the given source columns.
+
+    Args:
+        src_node_id: Numeric node id string (from `valid_node_ids` in the planning prompt, e.g. "0", "1") whose input_tables serve as the source tables.
+        column_names: Source columns to match against.
+
+    Returns:
+        ToolResponse: summary text. Result tables form a new child node.
+    """
     tables = _fetch_node_tables(src_node_id)
     result = ContentSeeker.search(tables, column_names) or []
     result = _cap(result)
@@ -154,7 +157,7 @@ def metadata_seeker(column_names: List[str], column_types: List[str]) -> ToolRes
     return ToolResponse(content=[TextBlock(type="text", text=_summarize("metadata_seeker", result))])
 
 
-# ==== rankers ====
+# Rankers
 
 def eq_ranker(src_node_id: str, column_name: str, column_value: str) -> ToolResponse:
     """Exact-equality value filter: rank the source node's tables by how often `column_value` (a CELL value, not a column name) appears in `column_name`."""
@@ -166,7 +169,17 @@ def eq_ranker(src_node_id: str, column_name: str, column_value: str) -> ToolResp
 
 
 def overlap_ranker(src_node_id: str, cand_node_id: str, join_column_name: str) -> ToolResponse:
-    """Score the OVERLAP predicate: Jaccard similarity between `cand_node_id`'s `join_column_name` value set and `src_node_id`'s value set on the same column."""
+    """Score candidate tables by the OVERLAP predicate: the Jaccard similarity between the
+    candidate's `join_column_name` value set and the source tables' value set on the same column.
+
+    Args:
+        src_node_id: Numeric node id string (from `valid_node_ids`, e.g. "0", "1") whose input_tables are the source (reference) side.
+        cand_node_id: Reasoning-tree node id whose input_tables are the candidate side being scored.
+        join_column_name: Shared column whose value sets are compared.
+
+    Returns:
+        ToolResponse: summary text. Result tables form a new child node.
+    """
     tables_1 = _fetch_node_tables(src_node_id)
     tables_2 = _fetch_node_tables(cand_node_id)
     result = CategoricalRanker.rank_overlap(tables_1, tables_2, join_column_name) or []
@@ -177,7 +190,20 @@ def overlap_ranker(src_node_id: str, cand_node_id: str, join_column_name: str) -
 
 def corr_ranker(src_node_id: str, cand_node_id: str, join_column_name: str,
                                     src_corr_column_name: str, cand_corr_column_name: str) -> ToolResponse:
-    """Score the CORRELATION predicate: |Pearson| between `cand_node_id`'s `cand_corr_column_name` and `src_node_id`'s `src_corr_column_name`, over the `join_column_name` join."""
+    """Score candidate tables by the CORRELATION predicate: the absolute Pearson correlation
+    between the candidate's `cand_corr_column_name` and the source's `src_corr_column_name`,
+    measured over the `join_column_name` join of the two sides.
+
+    Args:
+        src_node_id: Numeric node id string (from `valid_node_ids`, e.g. "0", "1") whose input_tables are the source (reference) side.
+        cand_node_id: Reasoning-tree node id whose input_tables are the candidate side being scored.
+        join_column_name: Shared column the two sides are joined on.
+        src_corr_column_name: Source-side numerical column (the reference metric).
+        cand_corr_column_name: Candidate-side numerical column correlated against it.
+
+    Returns:
+        ToolResponse: summary text. Result tables form a new child node.
+    """
     tables_1 = _fetch_node_tables(src_node_id)
     tables_2 = _fetch_node_tables(cand_node_id)
     result = CategoricalRanker.rank_correlation(
@@ -219,7 +245,7 @@ def range_ranker(src_node_id: str, column_name: str, min_val: float | None, max_
     return ToolResponse(content=[TextBlock(type="text", text=_summarize("range_ranker", result))])
 
 
-# ==== composite search (relationship-level convenience over the atomic seeker+ranker basis) ====
+# Relationship searches composed from seekers and rankers
 
 def join_search(src_node_id: str, join_column_name: str) -> ToolResponse:
     """Find tables joinable to the source node's tables on `join_column_name` (value overlap). Use when correlation isn't also needed — `correlation_search` already joins internally."""
@@ -251,7 +277,7 @@ def correlation_search(src_node_id: str, join_column_name: str, src_corr_column_
     return ToolResponse(content=[TextBlock(type="text", text=_summarize("correlation_search", result))])
 
 
-# ==== combiners (set operations over two nodes' input_tables, keyed by table_name) ====
+# Combine node results by table name.
 
 def combine(node_id_1: Annotated[str, Field(description="Any non-error node id (base set for 'difference').")],
             node_id_2: Annotated[str, Field(description="Any non-error node id (excluded set for 'difference').")],
@@ -265,7 +291,7 @@ def combine(node_id_1: Annotated[str, Field(description="Any non-error node id (
     elif op == "difference":
         exclude = {t.table_name for t in t2}
         result = [t for t in t1 if t.table_name not in exclude]
-    else:  # intersection (default)
+    else:
         common = {t.table_name for t in t1} & {t.table_name for t in t2}
         result = _merge_by_name(
             [[t for t in t1 if t.table_name in common], [t for t in t2 if t.table_name in common]], keep="max")
